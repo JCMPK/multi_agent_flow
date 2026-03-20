@@ -229,6 +229,247 @@ Runtime:        ~{elapsed} (estimated)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+## Tactical Playbook — Situational Combos
+
+These are pre-learned response patterns for common ML situations. When you detect the trigger condition, apply the combo automatically — do not wait for the user to tell you.
+
+---
+
+### Combo 1: Class Imbalance Detected
+**Trigger:** DataAnalystEngineer reports class imbalance ratio > 4:1 in `eda_report.json → class_balance`
+
+**What to do:**
+1. Dispatch `DataAnalystEngineer` again with explicit instruction:
+   ```
+   Re-engineer features with imbalance handling:
+   - Add class_weight="balanced" flag to pass to ModelTrainer
+   - If minority class < 500 samples: apply SMOTE oversampling in the pipeline
+   - Do NOT apply SMOTE to validation/test splits
+   ```
+2. Dispatch `Visualization` in parallel:
+   ```
+   Generate class distribution bar chart and SMOTE before/after comparison plot.
+   ```
+3. Dispatch `ModelTrainer` with extra instruction:
+   ```
+   Use class_weight="balanced" (or scale_pos_weight for XGBoost).
+   Primary metric must be f1_macro or auc_pr — NOT accuracy (misleading on imbalanced data).
+   Report per-class precision/recall in metrics.json.
+   ```
+4. Status update: `[COMBO: Class Imbalance] Applying SMOTE + weighted loss + switching metric to f1_macro.`
+
+---
+
+### Combo 2: Data Leakage Signal
+**Trigger:** DataAnalystEngineer flags a feature with correlation > 0.98 to target, OR a feature that encodes the future (e.g., "result", "outcome", "final_" prefix)
+
+**What to do:**
+1. **STOP the pipeline immediately.** Do not proceed to ModelTrainer.
+2. Dispatch `Visualization`:
+   ```
+   Generate correlation heatmap highlighting the suspicious column(s): {cols}.
+   ```
+3. Surface to user:
+   ```
+   ⚠️ PIPELINE PAUSED — Potential data leakage detected.
+   Suspicious columns: {cols} (correlation={value} with target).
+   These may encode the target directly or represent post-event data.
+   Action required: confirm these columns should be dropped before training.
+   Reply 'drop and continue' or 'keep and continue'.
+   ```
+4. Wait for user confirmation. Resume only after explicit approval.
+
+---
+
+### Combo 3: Score Plateau (Diminishing Returns Loop)
+**Trigger:** Two consecutive ModelResearcher verdicts of `needs_improvement` with metric improvement < 0.5% between runs
+
+**What to do — don't just retry the same approach:**
+1. Dispatch `ModelResearcher` with extra instruction:
+   ```
+   Prior two runs improved by < 0.5%. Plateau detected.
+   Specifically search for: ensemble methods, stacking, or pretrained models for this task.
+   Do not suggest further hyperparameter tuning of the same architecture.
+   ```
+2. Dispatch `DataAnalystEngineer` in parallel:
+   ```
+   Plateau detected after {N} runs. Re-examine feature set.
+   Look for: untried interaction terms, domain-specific transformations, or features that
+   high-importance models are ignoring. Produce an alternative feature set variant.
+   ```
+3. Dispatch `ModelTrainer` with ensemble instruction:
+   ```
+   Build a stacking ensemble: use top-2 models from experiment history as base learners,
+   logistic regression as meta-learner. Train on out-of-fold predictions.
+   ```
+4. Status: `[COMBO: Plateau] Switching to ensemble + feature re-examination after {N} runs with <0.5% gain.`
+
+---
+
+### Combo 4: Test Failures from ml-unit-test-runner
+**Trigger:** ml-unit-test-runner reports any failed tests
+
+**What to do — do not proceed to ModelResearcher with broken code:**
+1. Extract the failure tracebacks from ml-unit-test-runner's report.
+2. Dispatch `ModelTrainer`:
+   ```
+   Unit tests failed. Fix the following before any new training run:
+   {failure_tracebacks}
+   Do not re-train until tests pass. Report back with fix summary.
+   ```
+3. Re-dispatch `ml-unit-test-runner`:
+   ```
+   Re-run tests after ModelTrainer's fixes. Report pass/fail.
+   ```
+4. If tests still fail after one fix attempt — surface to user with full traceback. Do not loop more than once.
+5. Status: `[COMBO: Test Fix] {N} test failures sent back to ModelTrainer for repair.`
+
+---
+
+### Combo 5: replace_architecture Verdict
+**Trigger:** ModelResearcher verdict is `replace_architecture`
+
+**What to do — this is a deeper reset, not just a hyperparameter change:**
+1. Dispatch `ModelResearcher` for a specific follow-up:
+   ```
+   Verdict was replace_architecture. Provide:
+   - Exact HuggingFace model ID or sklearn class to use as replacement
+   - Required input format changes (e.g., tokenization for NLP, image tensors for CV)
+   - Whether current features from src/features.py are compatible or need rework
+   ```
+2. If features need rework → dispatch `DataAnalystEngineer`:
+   ```
+   Architecture replacement requires feature changes: {details}.
+   Rewrite src/features.py to produce {new_format} inputs.
+   ```
+3. Dispatch `ModelTrainer` with full new spec:
+   ```
+   Replace architecture entirely. New model: {model_id}.
+   Prior experiment history is available for reference but do not inherit old hyperparameters.
+   Start fresh with recommended defaults from ModelResearcher.
+   ```
+4. Reset loop counter — a full architecture swap earns a fresh 3-loop budget.
+5. Status: `[COMBO: Architecture Swap] Replacing {old_arch} → {new_arch}. Features: {reworked | compatible}.`
+
+---
+
+### Combo 6: Small Dataset (< 1,000 rows)
+**Trigger:** DataAnalystEngineer reports `n_rows < 1000`
+
+**What to do:**
+1. Dispatch `ModelTrainer` with small-data settings:
+   ```
+   Small dataset detected ({n_rows} rows). Apply:
+   - Leave-one-out CV or k=10 fold (not k=5)
+   - Prefer: logistic regression, SVM, simple decision tree, or regularised linear models
+   - Avoid deep learning entirely
+   - Use bootstrap confidence intervals on all metrics (n_bootstrap=1000)
+   - Report 95% CI alongside point estimates
+   ```
+2. Dispatch `DataAnalystEngineer` with extra instruction:
+   ```
+   Small dataset. Prioritise: remove redundant features aggressively (keep n_features < n_rows/10).
+   Flag any features with > 5% missing — imputation is riskier on small data.
+   ```
+3. Tell `ModelResearcher`:
+   ```
+   Dataset is small ({n_rows} rows). When searching benchmarks, filter for papers that
+   report results on similarly-sized datasets. SOTA on large datasets is not comparable.
+   ```
+4. Status: `[COMBO: Small Dataset] Switching to LOO-CV, regularised models, bootstrap CIs.`
+
+---
+
+### Combo 7: Large Dataset (> 500,000 rows)
+**Trigger:** DataAnalystEngineer reports `n_rows > 500000`
+
+**What to do:**
+1. Dispatch `DataAnalystEngineer` with sampling instruction:
+   ```
+   Large dataset ({n_rows} rows). For EDA profiling, stratified-sample 50,000 rows.
+   Full dataset will be used for training. Profile the sample but note it in eda_report.json.
+   ```
+2. Dispatch `ModelTrainer` with efficiency settings:
+   ```
+   Large dataset ({n_rows} rows). Apply:
+   - Use LightGBM (faster than XGBoost on large tabular data)
+   - Enable histogram-based training
+   - Use early_stopping_rounds=100 to avoid over-training
+   - For neural nets: use mini-batch SGD with batch_size=2048
+   - Do NOT run full grid search — use Optuna with n_trials=30, time_budget=3600s
+   ```
+3. Status: `[COMBO: Large Dataset] Sampling EDA to 50k rows. Training on full data with LightGBM + Optuna.`
+
+---
+
+### Combo 8: Feature Importance Surprise
+**Trigger:** ModelTrainer reports `model_info.json → feature_importance` where the top feature has importance > 0.5 (single feature dominates), OR the user's expected key features rank very low
+
+**What to do:**
+1. Dispatch `Visualization`:
+   ```
+   Generate feature importance chart for run {run_id}.
+   Annotate top feature with its importance score. Flag if single feature > 50% importance.
+   ```
+2. Dispatch `DataAnalystEngineer`:
+   ```
+   Feature importance anomaly detected: {top_feature} accounts for {pct}% of importance.
+   Investigate: is this a proxy for the target (leakage)? Is it a date/ID column?
+   Run partial dependence analysis on this feature if possible.
+   Report back before next training run.
+   ```
+3. Pause ModelResearcher until DataAnalystEngineer clears the feature.
+4. Status: `[COMBO: Feature Surprise] {top_feature} dominates at {pct}%. Pausing for DataAnalystEngineer investigation.`
+
+---
+
+### Combo 9: Quick Baseline Mode
+**Trigger:** User says "quick", "fast", "just a baseline", or sets a time constraint < 30 minutes
+
+**What to do — streamlined pipeline, skip slow phases:**
+1. Skip: Visualization (EDA plots), ml-unit-test-runner, ModelResearcher web search
+2. ModelTrainer instruction:
+   ```
+   Quick baseline only. Use: logistic regression + XGBoost with default hyperparameters.
+   No CV — single 80/20 train-test split. No hyperparameter search.
+   Target wall time: < 5 minutes.
+   ```
+3. ModelResearcher instruction (local only):
+   ```
+   Skip web search. Read experiment_index.json only.
+   Compare current run to any prior runs in history. No external benchmarking.
+   ```
+4. ReportDrafter: generate abbreviated report (executive summary + metrics table only).
+5. Status: `[COMBO: Quick Mode] Skipping EDA plots, unit tests, web research. Baseline only.`
+
+---
+
+### Combo 10: Overnight Autonomous Run
+**Trigger:** User says "run overnight", "autonomous", "don't wake me up", or similar
+
+**What to do — maximize thoroughness, minimize interruptions:**
+1. Run ALL phases including Visualization and ml-unit-test-runner.
+2. Set ModelTrainer to:
+   ```
+   Full Optuna search: n_trials=100, time_budget=14400s (4 hours).
+   Try at minimum: XGBoost, LightGBM, RandomForest, and one neural net.
+   Log every trial to experiment_index.json.
+   ```
+3. Allow all 3 optimizer loops — do not pause for user confirmation except data leakage (Combo 2).
+4. On leakage detection: log the warning to the report and DROP the suspicious columns automatically (do not pause).
+5. At completion, write a "wake-up summary" as the first section of the report:
+   ```markdown
+   ## Wake-Up Summary
+   Pipeline ran for ~{elapsed}. Here's what happened while you slept:
+   - Best result: {metric}={value} ({percentile} vs benchmark)
+   - Optimizer loops: {n}/3
+   - Verdict: {verdict}
+   - Action needed: {yes/no — specific ask if yes}
+   ```
+6. Status updates: write to `outputs/pipeline_log.txt` (append-only) instead of printing — reviewable in the morning.
+
+---
+
 ## Error Handling
 
 | Situation | Action |
